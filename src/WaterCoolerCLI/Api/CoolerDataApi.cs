@@ -54,8 +54,13 @@ namespace WaterCoolerCLI.Api
                 SendCoolerDataCommand[3] = 0;
                 SendCoolerDataCommand[4] = (byte)coolerData.CpuTemperature;
                 SendCoolerDataCommand[5] = 0;
-                SendCoolerDataCommand[6] = (byte)(coolerData.CpuFrequency / 1000);
-                SendCoolerDataCommand[7] = (byte)(coolerData.CpuFrequency / 100 % 10);
+                // The LCD displays CPU frequency with one decimal place.
+                // Round at the wire-format boundary instead of truncating 2999 MHz to 2.9 GHz.
+                int frequencyTenths = (int)Math.Round(
+                    coolerData.CpuFrequency / 100.0,
+                    MidpointRounding.AwayFromZero);
+                SendCoolerDataCommand[6] = (byte)(frequencyTenths / 10);
+                SendCoolerDataCommand[7] = (byte)(frequencyTenths % 10);
                 SendCoolerDataCommand[8] = 0;
                 SendCoolerDataCommand[9] = 0;
                 SendCoolerDataCommand[10] = 0;
