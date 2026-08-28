@@ -2,217 +2,212 @@
 
 ## Overview
 
-WaterCoolerCLI is a command-line interface (CLI) tool designed to control and monitor AORUS water coolers on Linux systems. Official AORUS software does not support Linux, so this tool provides essential functionality for managing fan and pump modes, curves, speeds, and real-time monitoring. It was developed as a reverse-engineered solution based on the AORUS cooler library to fill this gap.
+WaterCoolerCLI is a Linux command-line tool for controlling and monitoring compatible AORUS water coolers. The official AORUS software does not provide Linux support, so this project implements the required HID communication through reverse engineering.
 
-**Important Note:** This project is a quick proof-of-concept built in a couple of hours of spare time due to my busy work schedule. The code is not perfect, has rough edges, and could benefit from significant improvements, such as refactoring, better error handling, and possibly porting to a lower-level language like C or Rust for better performance and stability. Contributions are welcome!
-
-The majority of the core logic was reverse-engineered from the proprietary AORUS cooler library. Use at your own risk, as interacting with hardware can potentially cause damage if misused.
+The project is experimental and interacts directly with hardware. Use it at your own risk. The core protocol is not officially documented, and compatibility can vary between cooler models and firmware versions.
 
 ## Features
 
-- **Fan and Pump Control:**
-  - Get/set fan mode (e.g., Balanced, Turbo, Quiet, Custom).
-  - Get/set pump mode (similar options).
-  - Get current fan and pump speeds.
-  - Get/set custom fan and pump curves (temperature:speed points, e.g., `0:1000,30:1500`).
+- **Fan and pump control**
+  - Read and set fan and pump modes.
+  - Read current fan and pump speeds.
+  - Read and set custom fan and pump curves.
 
-- **Monitoring:**
-  - Real-time monitoring of speeds and CPU temperature (press 'q' to stop).
-  - Service mode to continuously send CPU temperature telemetry to the cooler for dynamic adjustment (intended for background daemon use).
+- **Monitoring**
+  - Display fan and pump information through the CLI.
+  - Read CPU temperature for monitoring and service mode.
+  - Run a background service that periodically sends host CPU telemetry to the cooler LCD.
 
-- **Visualization:**
-  - Plot current fan and pump curves in a simple ASCII graph.
+- **Visualization**
+  - Plot fan and pump curves as an ASCII graph.
 
-- **Interactive CLI:**
+- **Interactive CLI**
   - Tab completion for commands and options.
-  - Command history with up/down arrows.
-  - Help system with `help` command.
+  - Command history with arrow keys.
+  - Built-in help through the `help` command.
 
-- **Supported Devices:**
-  - Automatically detects common AORUS devices (VID:1044 PID:7A51, VID:1044 PID:7A4D, VID:0414 PID:7A5E).
-  - Extendable for other compatible HID-based coolers.
+- **Supported devices**
+  - The device discovery list currently includes `VID:PID 1044:7A51`, `1044:7A4D`, and `0414:7A5E`.
+  - The FW 2.0 telemetry layout was validated on an AORUS WATERFORCE X II 360I (`0414:7A5E`).
+
+## Current host telemetry scope
+
+The service currently reads and sends only the following host-side CPU values. It does **not** claim to decode every telemetry value available from the cooler or its HID interface.
+
+- CPU model name, sent during service startup.
+- CPU package temperature, read through the existing CPU temperature handler.
+- CPU frequency, read from `cpufreq/policy0/scaling_cur_freq` when available, with a per-core sysfs fallback.
+- Global CPU usage, calculated from deltas in `/proc/stat`.
+- CPU package power, calculated from an energy-counter delta:
+  - generic Linux `powercap` package zones exposing `energy_uj`; or
+  - AMD `amd_energy` HWMON socket counters labeled `Esocket` when the generic interface is unavailable.
+
+The CPU frequency is encoded to the LCD with one decimal place and rounded at the HID serialization boundary. For example, `2999 MHz` is transmitted as `3.0 GHz` instead of being truncated to `2.9 GHz`.
+
+The first CPU usage and power samples establish a baseline. Their initial values can therefore be zero until the next service cycle.
+
+## Firmware 2.0 telemetry layout
+
+For the validated AORUS `0414:7A5E` device, the runtime telemetry payload after the report prefix uses the following fields:
+
+```text
+E0 00 00 TEMP 00 FREQ_INT FREQ_DEC 00 00 00 USAGE POWER_H POWER_L
+```
+
+The complete HID report remains padded according to the device's report size. This layout is specific to the tested firmware/device combination and should not automatically be assumed to apply to every AORUS cooler.
 
 ## Requirements
 
-- **OS:** Linux (tested on latest Fedora and Ubuntu/Debian derivatives; requires HID access).
-- **Runtime:** .NET 9 SDK (for building).
-- **Hardware Access:** 
-  - Run as root for mode/curve changes (requires HID raw access via `libhidapi` or equivalent).
-  - CPU temperature reading requires `lm-sensors` or OpenHardwareMonitor-like access (uses `CpuTempHandler` for AMD/Intel support).
-- **Dependencies:** 
-  - HID libraries (e.g., `hidapi` for Linux).
-  - No external NuGet packages beyond standard .NET (self-contained build).
+- Linux with HID access.
+- .NET 10 SDK for building.
+- Native build tools and the platform HID development package when required by the distribution.
+- The `HidSharp` NuGet dependency, restored automatically by .NET.
 
-For CPU temperature reading in service mode, ensure your kernel supports it (e.g., via `/sys/class/thermal` or WMI equivalents, but adapted for Linux).
+On Ubuntu/Debian derivatives, the usual build prerequisites are:
+
+```bash
+sudo apt install build-essential libhidapi-dev
+```
+
+On Fedora-based systems:
+
+```bash
+sudo dnf install gcc-c++ hidapi-devel
+```
+
+The service normally requires root privileges because it writes HID reports to the cooler. Read-only CLI operations may work as a regular user depending on the installed udev rules.
 
 ## Building
 
-This project targets .NET 9 and should be built as a native AOT (Ahead-of-Time), self-contained, and trimmed executable for optimal performance and minimal size on Linux.
-
-### Prerequisites
-- Install .NET 9 SDK: [Download from Microsoft](https://dotnet.microsoft.com/download/dotnet/9.0).
-- On Linux, ensure build essentials: `sudo apt install build-essential libhidapi-dev` on Ubuntu/Debian, or `sudo dnf install gcc-c++ hidapi-devel` on Fedora (or equivalent for your distro).
-
-### Build Commands
-Navigate to the project directory (`WaterCoolerCLI/`) and run:
+Run the command from the repository root:
 
 ```bash
-# Clean previous builds
-dotnet clean
-
-# Publish as native AOT self-contained trimmed binary for Linux x64
-dotnet publish -c Release -r linux-x64 --self-contained true -p:PublishAot=true -p:PublishTrimmed=true -o ./publish
-
-# The executable will be at ./publish/WaterCoolerCLI
+dotnet publish -c Release -r linux-x64 \
+  --self-contained true \
+  -p:PublishAot=true \
+  -p:PublishTrimmed=true \
+  src/WaterCoolerCLI.sln
 ```
 
-This produces a standalone `WaterCoolerCLI` binary (no .NET runtime needed). The trimmed AOT build reduces size and startup time, ideal for daemon use.
+The published executable is generated under:
 
-- **Customization:** 
-  - For ARM64: Use `-r linux-arm64`.
-  - Disable trimming if issues arise: Remove `-p:PublishTrimmed=true`.
-  - Verify build: `./publish/WaterCoolerCLI --help` (run as root for full access).
+```text
+src/WaterCoolerCLI/bin/Release/net10.0/linux-x64/publish/WaterCoolerCLI
+```
+
+The project uses a native AOT, self-contained, trimmed build. `HidSharp` may emit the grouped .NET trim warning `IL2104` because that dependency is not fully annotated for trimming. The warning is currently known and does not prevent a successful build.
+
+For other architectures, change the runtime identifier, for example:
+
+```bash
+-r linux-arm64
+```
+
+If trimming causes a runtime issue during investigation, temporarily remove `-p:PublishTrimmed=true` to compare behavior.
 
 ## Usage
 
-Copy the built binary to a system path (e.g., `/usr/local/bin/WaterCoolerCLI`) and make it executable: `chmod +x WaterCoolerCLI`.
+### Interactive mode
 
-### Interactive Mode
-Run without arguments for an interactive shell:
+Run without arguments to open the interactive CLI:
 
 ```bash
 sudo ./WaterCoolerCLI
 ```
 
-- Type `help` for a list of commands.
-- Examples:
-  - `get-fan-mode` – View current fan mode.
-  - `set-fan-mode Turbo` – Set fan to Turbo (requires root).
-  - `set-fan-curve "0:1000,30:1500,50:2000,65:2500"` – Set custom fan curve (requires root).
-  - `monitor 1000` – Start monitoring every 1 second (press 'q' to quit).
-  - `plot-curves` – Display ASCII plot of curves.
-  - `quit` – Exit.
+Type `help` to list the available commands. Examples include:
 
-**Example Output (Connection and Plotting Curves):**
-
-```
-Connected to device: GP-AORUS WATERFORCE X 240 (VID: 1044, PID: 7A4D)
-Device initialized. Type 'help' for commands.
-> plot-curves
-Fan and Pump Curves Plot:
-Legend: * Fan curve, + Pump curve, O Fan points, o Pump points, x Intersection
-
-3200 ||                                                                    x
-     ||                                                                   x
-     ||                                                                  x
-     ||                                                                 x
-2526 ||                                                                +*
-     ||                                                               +*
-     ||                                                              +*
-     ||                                                             + *
-1852 ||                                                  +++++++++++o*
-     ||+++++++++++++++++++++++++++++++++++++++++++++++++o           *
-     |x                                                         ****O
-     ||                                                     ****
-1178 ||                                                 ****
-     ||                                             ****
-     ||                                         ****
-     ||                                     ****
- 505 ||                        ************O
-     ||            ************
-     ||************
-   0 |O---------------------------------------------------------------------
-      0°           11°           22°           33°           44°         55°
-
-Current Fan Curve Points:
-   0°C:    0 RPM
-  30°C:  637 RPM
-  50°C: 1578 RPM
-  55°C: 3200 RPM
-
-Current Pump Curve Points:
-   0°C: 1600 RPM
-  40°C: 1800 RPM
-  50°C: 2000 RPM
-  55°C: 3200 RPM
+```text
+get-fan-mode
+set-fan-mode Turbo
+set-fan-curve "0:1000,30:1500,50:2000,65:2500"
+monitor 1000
+plot-curves
+quit
 ```
 
-**Note:** Changing modes/curves requires root privileges due to HID device access. Monitoring/viewing can run as a regular user.
-
-### Single Command Mode
-Execute a single command and exit:
+### Single-command mode
 
 ```bash
 sudo ./WaterCoolerCLI get-speeds
-./WaterCoolerCLI get-fan-mode  # Non-modifying commands don't need sudo
+./WaterCoolerCLI get-fan-mode
 ```
 
-### Service Mode (Daemon for Telemetry)
-The `service` command sends CPU temperature to the cooler at regular intervals, enabling dynamic curve-based adjustments. This is designed for background use via systemd.
+### Service mode
 
-1. **Test Manually:**
-   ```bash
-   sudo ./WaterCoolerCLI service  # Send temps at default interval (press 'q' to stop)
-   ```
+The `service` command periodically reads the host CPU telemetry listed above and sends it to the cooler LCD. The default update interval is 500 ms.
 
-2. **Systemd Integration:**
-   Create a systemd service file `/etc/systemd/system/watercooler.service`:
+Test manually:
 
-   ```ini
-   [Unit]
-   Description=AORUS Water Cooler Telemetry Service
-   After=network.target
+```bash
+sudo ./WaterCoolerCLI service
+```
 
-   [Service]
-   Type=simple
-   User=root
-   ExecStart=/usr/local/bin/WaterCoolerCLI service
-   Restart=always
-   RestartSec=5
+Press `q` to stop the interactive service process.
 
-   [Install]
-   WantedBy=multi-user.target
-   ```
+A basic systemd unit can be created at `/etc/systemd/system/watercooler.service`:
 
-   - Adjust `ExecStart` path and add interval if needed (500ms default).
-   - Enable and start: 
-     ```bash
-     sudo systemctl daemon-reload
-     sudo systemctl enable watercooler.service
-     sudo systemctl start watercooler.service
-     sudo systemctl status watercooler.service  # Check logs
-     ```
+```ini
+[Unit]
+Description=AORUS Water Cooler Telemetry Service
+After=local-fs.target
 
-   - Stop: `sudo systemctl stop watercooler.service`.
-   - Logs: `journalctl -u watercooler.service -f`.
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/WaterCoolerCLI service
+Restart=always
+RestartSec=5
 
-**Permissions Note:** The service runs as root for HID write access. Ensure your cooler is detected (check `lsusb` for VID:1044 or similar).
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start it with:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now watercooler.service
+sudo systemctl status watercooler.service
+```
+
+View logs with:
+
+```bash
+journalctl -u watercooler.service -f
+```
+
+## Known limitations and future work
+
+- [ ] Inventory the remaining safe, read-only HID telemetry reports and document which values can be used in future LCD updates. This is intentionally separate from the host CPU telemetry currently implemented.
+- Compatibility with other models and firmware versions is not guaranteed.
+- The runtime telemetry protocol is reverse engineered and should be validated with captured reports before adding new fields.
+- The native AOT build may continue to report trim diagnostics from third-party HID dependencies.
 
 ## Troubleshooting
 
-- **Device Not Found:** Run `lsusb` to verify cooler VID/PID. Add custom VID/PID via command-line args if needed (future enhancement).
-- **HID Access Denied:** Ensure udev rules allow HID access (e.g., add rule for your device's VID/PID).
-- **CPU Temp Errors:** Install `lm-sensors` (e.g., `sudo apt install lm-sensors` on Ubuntu/Debian, `sudo dnf install lm-sensors` on Fedora) and run `sensors` to verify detection. The tool uses Linux sysfs for reading.
-- **Build Issues:** If AOT trimming breaks HID interop, build without trimming first.
-- **Compatibility:** Tested with specific AORUS models; may need tweaks for others.
+- **Device not found:** Check the USB device with `lsusb` and confirm the VID/PID is included in the discovery list.
+- **HID access denied:** Add an appropriate udev rule or run the operation with `sudo`.
+- **CPU temperature unavailable:** Verify the available Linux sensor interfaces and confirm that the CPU temperature handler can read them.
+- **CPU power shows zero initially:** The first power sample initializes the energy-counter baseline; wait for the next service cycle.
+- **Build warning IL2104:** This is a grouped trim warning produced by `HidSharp`; it is not a compiler error.
+- **Firmware compatibility:** Do not assume that a telemetry layout validated on one model or firmware applies to another without a read-only protocol comparison.
 
 ## Contributing
 
-Feel free to fork, improve, and submit pull requests! Potential enhancements:
-- Better cross-distro support.
-- GUI wrapper.
-- Port to C/Rust for native Linux integration.
-- More device support.
-- Improved logging and error handling.
+Contributions are welcome. Before changing a HID payload, document the exact device model, VID/PID, firmware response, report framing, and the evidence used to map each field. Prefer read-only probes and reversible tests.
+
+Potential contribution areas include:
+
+- Improved cross-distribution support.
+- Additional compatible devices.
+- Better logging and error handling.
+- Safe documentation of additional telemetry reports.
 
 ## License
 
-This project is open-source. GPL 3.0
-
-## Author
-
-Developed by Antonio Ardolino in spare time. Reverse-engineered from AORUS libraries for personal use and community benefit.
+This project is open source under the GPL-3.0 license.
 
 ---
 
-*Disclaimer: This tool interacts directly with hardware. The author is not responsible for any damage to your cooler, PC, or data. Always test in a safe environment. Code quality is basic due to time constraints – improvements appreciated!*
+*Disclaimer: This tool communicates directly with hardware. The project authors are not responsible for damage to the cooler, computer, or data. Test changes carefully and keep a known-good build available.*
